@@ -416,6 +416,7 @@
     <div id="syncStatus" style="font-size:12px;color:#d7ebe3;border:1px solid rgba(255,255,255,.25);padding:6px 9px;border-radius:4px;">☁ Not connected</div>
     <button class="btn btn-gold" id="driveConnectBtn" type="button" style="padding:7px 11px;">Connect Google Drive</button>
     <button class="btn btn-outline" id="syncBtn" type="button" style="padding:7px 11px;display:none;">↻ Sync</button>
+    <button class="btn btn-outline" id="driveDisconnectBtn" type="button" style="padding:7px 11px;display:none;">Disconnect</button>
   </div>
 </header>
 
@@ -677,6 +678,45 @@
     return GOOGLE_CLIENT_ID.indexOf("PASTE_YOUR_GOOGLE_CLIENT_ID") !== 0;
   }
 
+  var TOKEN_STORAGE_KEY = "chq_gdrive_token_v1";
+
+  function saveTokenToStorage(token, expiry){
+    try{
+      localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify({ token: token, expiry: expiry }));
+    }catch(e){ /* private browsing / storage disabled — session just won't persist */ }
+  }
+
+  function loadTokenFromStorage(){
+    try{
+      var raw = localStorage.getItem(TOKEN_STORAGE_KEY);
+      if(!raw) return null;
+      var data = JSON.parse(raw);
+      if(!data || !data.token || !data.expiry || Date.now() >= data.expiry) return null;
+      return data;
+    }catch(e){ return null; }
+  }
+
+  function clearTokenFromStorage(){
+    try{ localStorage.removeItem(TOKEN_STORAGE_KEY); }catch(e){ /* ignore */ }
+  }
+
+  function disconnectDrive(){
+    clearTokenFromStorage();
+    driveAccessToken = null;
+    driveTokenExpiry = 0;
+    driveFileId = null;
+    dataReady = false;
+    entries = [];
+    setSyncStatus("☁ Not connected", "error");
+    document.getElementById("driveConnectBtn").style.display = "";
+    document.getElementById("syncBtn").style.display = "none";
+    document.getElementById("driveDisconnectBtn").style.display = "none";
+    document.getElementById("entryTbody").innerHTML =
+      '<tr class="empty-row"><td colspan="10">Connect Google Drive (top right) to load and save your entries.</td></tr>';
+    document.getElementById("viewHost").innerHTML =
+      '<div class="report-note">Connect Google Drive (top right) to load your report.</div>';
+  }
+
   function loadGisScript(){
     if(gisLoadPromise) return gisLoadPromise;
     gisLoadPromise = new Promise(function(resolve, reject){
@@ -701,6 +741,7 @@
         if(resp && resp.access_token){
           driveAccessToken = resp.access_token;
           driveTokenExpiry = Date.now() + (Number(resp.expires_in || 3600) * 1000) - 60000;
+          saveTokenToStorage(driveAccessToken, driveTokenExpiry);
           resolvers.forEach(function(r){ r.resolve(driveAccessToken); });
         } else {
           var err = new Error((resp && resp.error) || "auth_failed");
@@ -882,8 +923,7 @@
     setSyncStatus("☁ Connecting…", "saving");
     try{
       await ensureAccessToken(true);
-      document.getElementById("driveConnectBtn").style.display = "none";
-      document.getElementById("syncBtn").style.display = "";
+      showConnectedUI();
       await runInitialLoad();
     }catch(e){
       setSyncStatus("☁ Google sign-in failed", "error");
@@ -891,7 +931,14 @@
     }
   }
 
+  function showConnectedUI(){
+    document.getElementById("driveConnectBtn").style.display = "none";
+    document.getElementById("syncBtn").style.display = "";
+    document.getElementById("driveDisconnectBtn").style.display = "";
+  }
+
   document.getElementById("driveConnectBtn").addEventListener("click", connectDrive);
+  document.getElementById("driveDisconnectBtn").addEventListener("click", disconnectDrive);
   document.getElementById("syncBtn").addEventListener("click", function(){
     refreshFromCloud(false);
   });
@@ -1320,14 +1367,37 @@
       return;
     }
 
-    // Try a silent reconnect (works if this browser already granted
-    // access in a previous session) so returning users don't have to
-    // click Connect every time.
+    // 1) Reuse a still-valid stored token first — this is what lets
+    //    you stay connected across page reloads without clicking
+    //    Connect every time.
+    var stored = loadTokenFromStorage();
+    if(stored){
+      driveAccessToken = stored.token;
+      driveTokenExpiry = stored.expiry;
+      try{
+        entries = await loadEntries();
+        dataReady = true;
+        showConnectedUI();
+        setSyncStatus("☁ Synced to Drive", "ok");
+        renderTable();
+        generateReport();
+        renderViewReport();
+        return;
+      }catch(e){
+        // stored token turned out to be invalid/revoked — clear it
+        // and fall through to a fresh silent/interactive attempt.
+        clearTokenFromStorage();
+        driveAccessToken = null;
+        driveTokenExpiry = 0;
+      }
+    }
+
+    // 2) Otherwise try a silent reconnect (works if this browser
+    //    already granted access in a previous session).
     try{
       await loadGisScript();
       await ensureAccessToken(false);
-      document.getElementById("driveConnectBtn").style.display = "none";
-      document.getElementById("syncBtn").style.display = "";
+      showConnectedUI();
       await runInitialLoad();
     }catch(e){
       setSyncStatus("☁ Not connected", "error");
