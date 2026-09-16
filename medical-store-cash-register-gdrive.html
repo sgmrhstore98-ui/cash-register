@@ -775,7 +775,10 @@
     // Searches every file this account can see — its own files AND
     // anything shared with it — so a teammate who was given Editor
     // access on the shared file will find the same file here.
-    var q = "name='" + DRIVE_FILE_NAME + "' and trashed=false";
+    // mimeType filter guards against ever matching a same-named
+    // Google Doc/Sheet (which can't be downloaded as raw data and
+    // would throw "fileNotDownloadable").
+    var q = "name='" + DRIVE_FILE_NAME + "' and trashed=false and mimeType='application/json'";
     var url = "https://www.googleapis.com/drive/v3/files?q=" + encodeURIComponent(q) +
       "&fields=files(id,name,modifiedTime,owners(emailAddress))&orderBy=modifiedTime desc&pageSize=5";
     var res = await fetch(url, { headers: driveHeaders(token) });
